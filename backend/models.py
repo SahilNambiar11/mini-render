@@ -10,7 +10,7 @@ class Deployment(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     image = Column(String, nullable=False)
-    container_id = Column(String, nullable=False)
+    container_id = Column(String, nullable=True)
     status = Column(String, nullable=False, default="running")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     deleted_at = Column(DateTime, nullable=True)

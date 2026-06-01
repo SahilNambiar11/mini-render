@@ -4,6 +4,8 @@ from database import SessionLocal
 from models import Deployment
 from datetime import datetime, timezone
 from fastapi.middleware.cors import CORSMiddleware
+from task_queue import deployment_queue
+from jobs import deploy_container_job
 import docker
 
 app = FastAPI()
@@ -44,43 +46,42 @@ def create_container(request: ContainerCreateRequest):
     db = SessionLocal()
 
     try:
-        port_key = f"{request.container_port}/tcp"
-
-        container = client.containers.run(
-            request.image,
-            detach=True,
-            ports={port_key: None},
-            name=request.name
-        )
-        container.reload()
-
         deployment = Deployment(
             name=request.name,
             image=request.image,
-            container_id=container.id,
-            status=container.status
+            container_id=None,
+            status="queued"
         )
 
         db.add(deployment)
         db.commit()
         db.refresh(deployment)
 
+        deployment_queue.enqueue(
+            deploy_container_job,
+            deployment.id,
+            request.image,
+            request.container_port,
+            request.name
+        )
+
         return {
+            "message": "deployment queued",
             "deployment": {
                 "id": deployment.id,
                 "name": deployment.name,
                 "image": deployment.image,
-                "container_id": deployment.container_id[:12],
+                "container_id": deployment.container_id,
                 "status": deployment.status,
                 "created_at": deployment.created_at,
                 "deleted_at": deployment.deleted_at
-            },
-            "container": format_container(container)
+            }
         }
 
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         db.close()
 
@@ -265,7 +266,7 @@ def list_deployments():
                 "id": deployment.id,
                 "name": deployment.name,
                 "image": deployment.image,
-                "container_id": deployment.container_id[:12],
+                "container_id": deployment.container_id[:12] if deployment.container_id else None,
                 "status": deployment.status,
                 "created_at": deployment.created_at,
                 "deleted_at": deployment.deleted_at
