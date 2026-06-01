@@ -283,6 +283,47 @@ tbody tr:hover {
   text-align: right;
 }
 
+.logs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.live-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 8px;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: capitalize;
+}
+
+.live-status-idle,
+.live-status-disconnected {
+  background: var(--neutral-bg);
+  color: var(--muted);
+}
+
+.live-status-connecting {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.live-status-connected {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.live-status-error {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;

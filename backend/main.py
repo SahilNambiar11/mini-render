@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from task_queue import deployment_queue
 from jobs import deploy_container_job
+from fastapi import WebSocket, WebSocketDisconnect
+from starlette.concurrency import iterate_in_threadpool
 import docker
 
 app = FastAPI()
@@ -306,3 +308,31 @@ def get_deployment(deployment_id: int):
 
     finally:
         db.close()
+
+@app.websocket("/ws/containers/{container_id}/logs")
+async def stream_container_logs(websocket: WebSocket, container_id: str):
+    await websocket.accept()
+    log_stream = None
+
+    try:
+        container = client.containers.get(container_id)
+        log_stream = container.logs(stream=True, follow=True, tail=50)
+
+        async for line in iterate_in_threadpool(log_stream):
+            decoded_line = line.decode("utf-8", errors="replace")
+            await websocket.send_text(decoded_line)
+
+    except WebSocketDisconnect:
+        print("Client disconnected from log stream")
+
+    except docker.errors.NotFound:
+        await websocket.send_text("Error: Container not found")
+        await websocket.close()
+
+    except Exception as e:
+        await websocket.send_text(f"Error: {str(e)}")
+        await websocket.close()
+
+    finally:
+        if log_stream and hasattr(log_stream, "close"):
+            log_stream.close()

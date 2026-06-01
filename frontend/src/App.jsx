@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
 const API_BASE = "http://127.0.0.1:8000";
+const WS_BASE = "ws://127.0.0.1:8000";
 
 async function apiRequest(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -82,6 +83,7 @@ function DeploymentActions({
   onRestart,
   onDelete,
   onLogs,
+  onLiveLogs,
 }) {
   const status = (deployment.status || "").toLowerCase();
   const isDeleted = status === "deleted";
@@ -120,6 +122,14 @@ function DeploymentActions({
         Logs
       </button>
       <button
+        className="button button-secondary"
+        disabled={isBusy}
+        type="button"
+        onClick={() => onLiveLogs(deployment)}
+      >
+        Live Logs
+      </button>
+      <button
         className="button button-danger"
         disabled={isBusy}
         type="button"
@@ -135,9 +145,14 @@ function LogsPanel({
   logs,
   logError,
   logLoading,
+  logMode,
+  liveLogStatus,
   selectedDeploymentName,
   onClear,
+  onStopLiveLogs,
 }) {
+  const isLive = logMode === "live";
+
   return (
     <section className="panel logs-panel" aria-label="Container logs">
       <div className="panel-header">
@@ -145,22 +160,40 @@ function LogsPanel({
           <h2>Logs</h2>
           <p>
             {selectedDeploymentName
-              ? `Showing output for ${selectedDeploymentName}`
+              ? `${isLive ? "Streaming" : "Showing"} output for ${selectedDeploymentName}`
               : "Choose a deployment to view recent output"}
           </p>
+          {isLive && (
+            <span className={`live-status live-status-${liveLogStatus}`}>
+              {liveLogStatus}
+            </span>
+          )}
         </div>
-        <button
-          className="button button-secondary"
-          disabled={!logs && !logError && !selectedDeploymentName}
-          type="button"
-          onClick={onClear}
-        >
-          Clear
-        </button>
+        <div className="logs-actions">
+          {isLive && liveLogStatus === "connected" && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={onStopLiveLogs}
+            >
+              Stop Live
+            </button>
+          )}
+          <button
+            className="button button-secondary"
+            disabled={!logs && !logError && !selectedDeploymentName}
+            type="button"
+            onClick={onClear}
+          >
+            Clear
+          </button>
+        </div>
       </div>
 
       <div className="logs-window">
-        {logLoading && <Spinner label="Fetching logs" />}
+        {logLoading && (
+          <Spinner label={isLive ? "Connecting to logs" : "Fetching logs"} />
+        )}
         {!logLoading && logError && <p className="logs-error">{logError}</p>}
         {!logLoading && !logError && logs && <pre>{logs}</pre>}
         {!logLoading && !logError && !logs && (
@@ -177,6 +210,8 @@ function App() {
   const [containerPort, setContainerPort] = useState(80);
   const [name, setName] = useState("");
   const [logs, setLogs] = useState("");
+  const [logMode, setLogMode] = useState("snapshot");
+  const [liveLogStatus, setLiveLogStatus] = useState("idle");
   const [selectedDeploymentName, setSelectedDeploymentName] = useState("");
   const [loadingDeployments, setLoadingDeployments] = useState(true);
   const [logLoading, setLogLoading] = useState(false);
@@ -184,6 +219,7 @@ function App() {
   const [error, setError] = useState("");
   const [logError, setLogError] = useState("");
   const [toast, setToast] = useState(null);
+  const logSocketRef = useRef(null);
 
   const deploymentCounts = useMemo(() => {
     return deployments.reduce(
@@ -293,8 +329,21 @@ function App() {
     );
   }
 
+  function closeLiveLogSocket({ resetStatus = true } = {}) {
+    if (logSocketRef.current) {
+      logSocketRef.current.close();
+      logSocketRef.current = null;
+    }
+
+    if (resetStatus) {
+      setLiveLogStatus("idle");
+    }
+  }
+
   async function fetchLogs(deployment) {
+    closeLiveLogSocket();
     setSelectedDeploymentName(deployment.name);
+    setLogMode("snapshot");
     setLogLoading(true);
     setLogError("");
 
@@ -313,9 +362,58 @@ function App() {
     }
   }
 
-  function clearLogs() {
+  function streamLogs(deployment) {
+    closeLiveLogSocket({ resetStatus: false });
+    setSelectedDeploymentName(deployment.name);
+    setLogMode("live");
     setLogs("");
     setLogError("");
+    setLogLoading(true);
+    setLiveLogStatus("connecting");
+
+    const socket = new WebSocket(
+      `${WS_BASE}/ws/containers/${deployment.container_id}/logs`,
+    );
+
+    logSocketRef.current = socket;
+
+    socket.onopen = () => {
+      setLogLoading(false);
+      setLiveLogStatus("connected");
+    };
+
+    socket.onmessage = (event) => {
+      setLogs((currentLogs) => `${currentLogs}${event.data}`);
+    };
+
+    socket.onerror = () => {
+      setLogLoading(false);
+      setLiveLogStatus("error");
+      setLogError("Live logs connection failed.");
+    };
+
+    socket.onclose = () => {
+      setLogLoading(false);
+
+      if (logSocketRef.current === socket) {
+        logSocketRef.current = null;
+        setLiveLogStatus((status) =>
+          status === "error" ? "error" : "disconnected",
+        );
+      }
+    };
+  }
+
+  function stopLiveLogs() {
+    closeLiveLogSocket({ resetStatus: false });
+    setLiveLogStatus("disconnected");
+  }
+
+  function clearLogs() {
+    closeLiveLogSocket();
+    setLogs("");
+    setLogError("");
+    setLogMode("snapshot");
     setSelectedDeploymentName("");
   }
 
@@ -323,6 +421,8 @@ function App() {
     // Initial server sync for the dashboard data.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchDeployments();
+
+    return () => closeLiveLogSocket();
   }, []);
 
   return (
@@ -473,6 +573,7 @@ function App() {
                           deployment={deployment}
                           isBusy={isBusy}
                           onDelete={deleteContainer}
+                          onLiveLogs={streamLogs}
                           onLogs={fetchLogs}
                           onRestart={restartContainer}
                           onStop={stopContainer}
@@ -491,8 +592,11 @@ function App() {
         logs={logs}
         logError={logError}
         logLoading={logLoading}
+        logMode={logMode}
+        liveLogStatus={liveLogStatus}
         selectedDeploymentName={selectedDeploymentName}
         onClear={clearLogs}
+        onStopLiveLogs={stopLiveLogs}
       />
     </main>
   );
