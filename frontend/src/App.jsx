@@ -84,6 +84,7 @@ function DeploymentActions({
   onDelete,
   onLogs,
   onLiveLogs,
+  onMetrics,
 }) {
   const status = (deployment.status || "").toLowerCase();
   const isDeleted = status === "deleted";
@@ -129,6 +130,16 @@ function DeploymentActions({
       >
         Live Logs
       </button>
+      {isRunning && (
+        <button
+          className="button button-secondary"
+          disabled={isBusy}
+          type="button"
+          onClick={() => onMetrics(deployment)}
+        >
+          Metrics
+        </button>
+      )}
       <button
         className="button button-danger"
         disabled={isBusy}
@@ -138,6 +149,67 @@ function DeploymentActions({
         Delete
       </button>
     </div>
+  );
+}
+
+function formatMetric(value, suffix = "%") {
+  if (value === null || value === undefined) return "Unavailable";
+
+  const number = Number(value);
+  if (Number.isNaN(number)) return "Unavailable";
+
+  return `${number.toFixed(2)}${suffix}`;
+}
+
+function MetricsPanel({
+  metrics,
+  metricsError,
+  metricsLoading,
+  selectedMetricsName,
+}) {
+  return (
+    <section className="panel metrics-panel" aria-label="Container metrics">
+      <div className="panel-header">
+        <div>
+          <h2>Metrics</h2>
+          <p>
+            {selectedMetricsName
+              ? `Showing resource usage for ${selectedMetricsName}`
+              : "Choose a running deployment to view resource usage"}
+          </p>
+        </div>
+      </div>
+
+      <div className="metrics-content">
+        {metricsLoading && <Spinner label="Fetching metrics" />}
+        {!metricsLoading && metricsError && (
+          <p className="metrics-error">{metricsError}</p>
+        )}
+        {!metricsLoading && !metricsError && metrics && (
+          <div className="metrics-grid">
+            <div>
+              <span>CPU</span>
+              <strong>{formatMetric(metrics.cpu_percent)}</strong>
+            </div>
+            <div>
+              <span>Memory Usage</span>
+              <strong>{formatMetric(metrics.memory_usage_mb, " MB")}</strong>
+            </div>
+            <div>
+              <span>Memory Limit</span>
+              <strong>{formatMetric(metrics.memory_limit_mb, " MB")}</strong>
+            </div>
+            <div>
+              <span>Memory</span>
+              <strong>{formatMetric(metrics.memory_percent)}</strong>
+            </div>
+          </div>
+        )}
+        {!metricsLoading && !metricsError && !metrics && (
+          <p className="metrics-empty">Metrics will appear here.</p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -213,6 +285,10 @@ function App() {
   const [logMode, setLogMode] = useState("snapshot");
   const [liveLogStatus, setLiveLogStatus] = useState("idle");
   const [selectedDeploymentName, setSelectedDeploymentName] = useState("");
+  const [selectedMetricsName, setSelectedMetricsName] = useState("");
+  const [metrics, setMetrics] = useState(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsError, setMetricsError] = useState("");
   const [loadingDeployments, setLoadingDeployments] = useState(true);
   const [logLoading, setLogLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState("");
@@ -359,6 +435,26 @@ function App() {
       );
     } finally {
       setLogLoading(false);
+    }
+  }
+
+  async function fetchMetrics(deployment) {
+    setSelectedMetricsName(deployment.name);
+    setMetrics(null);
+    setMetricsLoading(true);
+    setMetricsError("");
+
+    try {
+      const data = await apiRequest(
+        `/containers/${deployment.container_id}/metrics`,
+      );
+      setMetrics(data);
+    } catch (err) {
+      setMetricsError(
+        err.message || "Metrics are unavailable for this container right now.",
+      );
+    } finally {
+      setMetricsLoading(false);
     }
   }
 
@@ -575,6 +671,7 @@ function App() {
                           onDelete={deleteContainer}
                           onLiveLogs={streamLogs}
                           onLogs={fetchLogs}
+                          onMetrics={fetchMetrics}
                           onRestart={restartContainer}
                           onStop={stopContainer}
                         />
@@ -597,6 +694,13 @@ function App() {
         selectedDeploymentName={selectedDeploymentName}
         onClear={clearLogs}
         onStopLiveLogs={stopLiveLogs}
+      />
+
+      <MetricsPanel
+        metrics={metrics}
+        metricsError={metricsError}
+        metricsLoading={metricsLoading}
+        selectedMetricsName={selectedMetricsName}
       />
     </main>
   );

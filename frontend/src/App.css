@@ -60,7 +60,8 @@
 
 .deploy-panel,
 .table-panel,
-.logs-panel {
+.logs-panel,
+.metrics-panel {
   margin-top: 16px;
 }
 
@@ -390,6 +391,57 @@ tbody tr:hover {
   color: #fecaca;
 }
 
+.metrics-content {
+  min-height: 130px;
+  padding: 20px;
+  text-align: left;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 12px;
+}
+
+.metrics-grid div {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--row-hover);
+  padding: 14px;
+}
+
+.metrics-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.metrics-grid strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-h);
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.metrics-empty,
+.metrics-error {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.metrics-empty {
+  color: var(--muted);
+}
+
+.metrics-error {
+  color: var(--danger-text);
+}
+
 .spinner-wrap {
   display: inline-flex;
   align-items: center;
@@ -441,6 +493,10 @@ tbody tr:hover {
   .panel-header .button {
     width: 100%;
   }
+
+  .metrics-grid {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
 }
 
 @media (max-width: 520px) {
@@ -452,5 +508,9 @@ tbody tr:hover {
     left: 12px;
     right: 12px;
     max-width: none;
+  }
+
+  .metrics-grid {
+    grid-template-columns: 1fr;
   }
 }
