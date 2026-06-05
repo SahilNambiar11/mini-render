@@ -629,7 +629,7 @@ function App() {
       <header className="dashboard-header">
         <div>
           <p className="eyebrow">Mini Render</p>
-          <h1>Deployments</h1>
+          <h1>Deployments CI/CD Test</h1>
         </div>
         <div className="summary-grid" aria-label="Deployment summary">
           <div>
