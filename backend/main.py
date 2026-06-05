@@ -9,6 +9,7 @@ from jobs import deploy_container_job
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.concurrency import iterate_in_threadpool
 import docker
+import requests
 
 app = FastAPI()
 
@@ -375,6 +376,72 @@ def get_container_metrics(container_id: str):
             "memory_limit_mb": round(memory_limit_mb, 2),
             "memory_percent": round(memory_percent, 2),
         }
+
+    except docker.errors.NotFound:
+        raise HTTPException(status_code=404, detail="Container not found")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/containers/{container_id}/health")
+def get_container_health(container_id: str):
+    try:
+        container = client.containers.get(container_id)
+        container.reload()
+
+        if container.status != "running":
+            return {
+                "container_id": container.id,
+                "status": container.status,
+                "health": "unhealthy",
+                "reason": "Container is not running",
+            }
+
+        ports = container.attrs["NetworkSettings"]["Ports"]
+
+        host_port = None
+        container_port = None
+
+        for port_key, bindings in ports.items():
+            if bindings:
+                container_port = port_key
+                host_port = bindings[0]["HostPort"]
+                break
+
+        if not host_port:
+            return {
+                "container_id": container.id,
+                "status": container.status,
+                "health": "unhealthy",
+                "reason": "No exposed host port found",
+            }
+
+        url = f"http://127.0.0.1:{host_port}"
+
+        try:
+            response = requests.get(url, timeout=3)
+            is_healthy = 200 <= response.status_code < 400
+
+            return {
+                "container_id": container.id,
+                "status": container.status,
+                "health": "healthy" if is_healthy else "unhealthy",
+                "checked_url": url,
+                "container_port": container_port,
+                "host_port": host_port,
+                "status_code": response.status_code,
+            }
+
+        except requests.RequestException as e:
+            return {
+                "container_id": container.id,
+                "status": container.status,
+                "health": "unhealthy",
+                "checked_url": url,
+                "container_port": container_port,
+                "host_port": host_port,
+                "reason": str(e),
+            }
 
     except docker.errors.NotFound:
         raise HTTPException(status_code=404, detail="Container not found")
