@@ -336,3 +336,48 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
     finally:
         if log_stream and hasattr(log_stream, "close"):
             log_stream.close()
+
+@app.get("/containers/{container_id}/metrics")
+def get_container_metrics(container_id: str):
+    try:
+        container = client.containers.get(container_id)
+        stats = container.stats(stream=False)
+
+        cpu_delta = (
+            stats["cpu_stats"]["cpu_usage"]["total_usage"]
+            - stats["precpu_stats"]["cpu_usage"]["total_usage"]
+        )
+
+        system_delta = (
+            stats["cpu_stats"]["system_cpu_usage"]
+            - stats["precpu_stats"]["system_cpu_usage"]
+        )
+
+        online_cpus = stats["cpu_stats"].get("online_cpus", 1)
+
+        cpu_percent = 0.0
+        if system_delta > 0 and cpu_delta > 0:
+            cpu_percent = (cpu_delta / system_delta) * online_cpus * 100.0
+
+        memory_usage = stats["memory_stats"].get("usage", 0)
+        memory_limit = stats["memory_stats"].get("limit", 1)
+
+        memory_usage_mb = memory_usage / (1024 * 1024)
+        memory_limit_mb = memory_limit / (1024 * 1024)
+        memory_percent = (memory_usage / memory_limit) * 100 if memory_limit else 0
+
+        return {
+            "container_id": container.id,
+            "name": container.name,
+            "status": container.status,
+            "cpu_percent": round(cpu_percent, 2),
+            "memory_usage_mb": round(memory_usage_mb, 2),
+            "memory_limit_mb": round(memory_limit_mb, 2),
+            "memory_percent": round(memory_percent, 2),
+        }
+
+    except docker.errors.NotFound:
+        raise HTTPException(status_code=404, detail="Container not found")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
