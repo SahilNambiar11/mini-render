@@ -85,6 +85,7 @@ function DeploymentActions({
   onLogs,
   onLiveLogs,
   onMetrics,
+  onHealth,
 }) {
   const status = (deployment.status || "").toLowerCase();
   const isDeleted = status === "deleted";
@@ -140,6 +141,16 @@ function DeploymentActions({
           Metrics
         </button>
       )}
+      {isRunning && (
+        <button
+          className="button button-secondary"
+          disabled={isBusy}
+          type="button"
+          onClick={() => onHealth(deployment)}
+        >
+          Health
+        </button>
+      )}
       <button
         className="button button-danger"
         disabled={isBusy}
@@ -150,6 +161,14 @@ function DeploymentActions({
       </button>
     </div>
   );
+}
+
+function formatValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return "Unavailable";
+  }
+
+  return String(value);
 }
 
 function formatMetric(value, suffix = "%") {
@@ -207,6 +226,64 @@ function MetricsPanel({
         )}
         {!metricsLoading && !metricsError && !metrics && (
           <p className="metrics-empty">Metrics will appear here.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function HealthPanel({ health, healthError, healthLoading, selectedHealthName }) {
+  const healthStatus = (health?.health || "unknown").toLowerCase();
+
+  return (
+    <section className="panel health-panel" aria-label="Container health">
+      <div className="panel-header">
+        <div>
+          <h2>Health</h2>
+          <p>
+            {selectedHealthName
+              ? `Showing health check for ${selectedHealthName}`
+              : "Choose a running deployment to view health status"}
+          </p>
+        </div>
+      </div>
+
+      <div className="metrics-content">
+        {healthLoading && <Spinner label="Checking health" />}
+        {!healthLoading && healthError && (
+          <p className="metrics-error">{healthError}</p>
+        )}
+        {!healthLoading && !healthError && health && (
+          <>
+            <span className={`health-badge health-${healthStatus}`}>
+              {healthStatus}
+            </span>
+            <div className="metrics-grid health-grid">
+              <div>
+                <span>Container Status</span>
+                <strong>{formatValue(health.status)}</strong>
+              </div>
+              <div>
+                <span>Status Code</span>
+                <strong>{formatValue(health.status_code)}</strong>
+              </div>
+              <div>
+                <span>Host Port</span>
+                <strong>{formatValue(health.host_port)}</strong>
+              </div>
+              <div>
+                <span>Container Port</span>
+                <strong>{formatValue(health.container_port)}</strong>
+              </div>
+              <div className="health-url-cell">
+                <span>Checked URL</span>
+                <strong>{formatValue(health.checked_url)}</strong>
+              </div>
+            </div>
+          </>
+        )}
+        {!healthLoading && !healthError && !health && (
+          <p className="metrics-empty">Health details will appear here.</p>
         )}
       </div>
     </section>
@@ -289,6 +366,10 @@ function App() {
   const [metrics, setMetrics] = useState(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsError, setMetricsError] = useState("");
+  const [selectedHealthName, setSelectedHealthName] = useState("");
+  const [health, setHealth] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [healthError, setHealthError] = useState("");
   const [loadingDeployments, setLoadingDeployments] = useState(true);
   const [logLoading, setLogLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState("");
@@ -455,6 +536,26 @@ function App() {
       );
     } finally {
       setMetricsLoading(false);
+    }
+  }
+
+  async function fetchHealth(deployment) {
+    setSelectedHealthName(deployment.name);
+    setHealth(null);
+    setHealthLoading(true);
+    setHealthError("");
+
+    try {
+      const data = await apiRequest(
+        `/containers/${deployment.container_id}/health`,
+      );
+      setHealth(data);
+    } catch (err) {
+      setHealthError(
+        err.message || "Health details are unavailable for this container.",
+      );
+    } finally {
+      setHealthLoading(false);
     }
   }
 
@@ -669,6 +770,7 @@ function App() {
                           deployment={deployment}
                           isBusy={isBusy}
                           onDelete={deleteContainer}
+                          onHealth={fetchHealth}
                           onLiveLogs={streamLogs}
                           onLogs={fetchLogs}
                           onMetrics={fetchMetrics}
@@ -701,6 +803,13 @@ function App() {
         metricsError={metricsError}
         metricsLoading={metricsLoading}
         selectedMetricsName={selectedMetricsName}
+      />
+
+      <HealthPanel
+        health={health}
+        healthError={healthError}
+        healthLoading={healthLoading}
+        selectedHealthName={selectedHealthName}
       />
     </main>
   );

@@ -61,7 +61,8 @@
 .deploy-panel,
 .table-panel,
 .logs-panel,
-.metrics-panel {
+.metrics-panel,
+.health-panel {
   margin-top: 16px;
 }
 
@@ -442,6 +443,42 @@ tbody tr:hover {
   color: var(--danger-text);
 }
 
+.health-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-bottom: 14px;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: capitalize;
+}
+
+.health-healthy {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.health-unhealthy {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.health-unknown {
+  background: var(--neutral-bg);
+  color: var(--muted);
+}
+
+.health-url-cell {
+  grid-column: span 2;
+}
+
+.health-url-cell strong {
+  overflow-wrap: anywhere;
+}
+
 .spinner-wrap {
   display: inline-flex;
   align-items: center;
@@ -497,6 +534,10 @@ tbody tr:hover {
   .metrics-grid {
     grid-template-columns: repeat(2, minmax(130px, 1fr));
   }
+
+  .health-url-cell {
+    grid-column: span 2;
+  }
 }
 
 @media (max-width: 520px) {
@@ -512,5 +553,9 @@ tbody tr:hover {
 
   .metrics-grid {
     grid-template-columns: 1fr;
+  }
+
+  .health-url-cell {
+    grid-column: span 1;
   }
 }
