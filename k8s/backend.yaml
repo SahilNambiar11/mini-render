@@ -20,7 +20,7 @@ spec:
             - containerPort: 8000
           env:
             - name: DATABASE_URL
-              value: postgresql://sahil:password@postgres:5432/minirender
+              value: postgresql://sahil:password123@postgres:5432/minirender
             - name: REDIS_URL
               value: redis://redis:6379/0
 ---
