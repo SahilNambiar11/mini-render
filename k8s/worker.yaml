@@ -12,6 +12,7 @@ spec:
       labels:
         app: worker
     spec:
+      serviceAccountName: mini-render
       containers:
         - name: worker
           image: mini-render-backend:local

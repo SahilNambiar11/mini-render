@@ -12,6 +12,7 @@ spec:
       labels:
         app: backend
     spec:
+      serviceAccountName: mini-render
       containers:
         - name: backend
           image: mini-render-backend:local
