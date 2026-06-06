@@ -3,11 +3,12 @@ import docker
 from database import SessionLocal
 from models import Deployment
 
-client = docker.from_env()
 
 
 def deploy_container_job(deployment_id: int, image: str, container_port: int, name: str):
     db = SessionLocal()
+    client = docker.from_env()
+
 
     try:
         deployment = (
