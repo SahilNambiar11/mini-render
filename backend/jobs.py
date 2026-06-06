@@ -9,7 +9,6 @@ def deploy_container_job(deployment_id: int, image: str, container_port: int, na
     db = SessionLocal()
     client = docker.from_env()
 
-
     try:
         deployment = (
             db.query(Deployment)
