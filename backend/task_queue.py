@@ -1,6 +1,8 @@
+import os
 from redis import Redis
 from rq import Queue
 
-redis_conn = Redis(host="127.0.0.1", port=6379, decode_responses=False)
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 
+redis_conn = Redis.from_url(REDIS_URL)
 deployment_queue = Queue("deployments", connection=redis_conn)
