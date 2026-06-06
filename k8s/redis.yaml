@@ -19,7 +19,7 @@ spec:
             - name: POSTGRES_USER
               value: sahil
             - name: POSTGRES_PASSWORD
-              value: password
+              value: password123
             - name: POSTGRES_DB
               value: minirender
           ports:
