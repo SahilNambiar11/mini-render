@@ -26,8 +26,9 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt
 
-            sudo systemctl kill mini-render-backend || true
+            sudo systemctl kill -s SIGKILL mini-render-backend || true
             sleep 2
+            sudo systemctl reset-failed mini-render-backend || true
             sudo systemctl start mini-render-backend
 
             sudo systemctl restart mini-render-worker
