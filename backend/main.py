@@ -21,7 +21,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = docker.from_env()
+def get_docker_client():
+    return docker.from_env()
+
 
 class ContainerCreateRequest(BaseModel):
     image: str
@@ -38,6 +40,7 @@ def health():
 
 @app.get("/docker")
 def docker_status():
+    client = get_docker_client()
     version = client.version()
     return {
         "status": "connected",
@@ -91,6 +94,7 @@ def create_container(request: ContainerCreateRequest):
 @app.post("/containers/nginx")
 def run_nginx():
     try:
+        client = get_docker_client()
         container = client.containers.run(
             "nginx",
             detach=True,
@@ -112,6 +116,7 @@ def run_nginx():
 @app.get("/containers")
 def list_containers():
     try:
+        client = get_docker_client()
         containers = client.containers.list(all=True)
         return [format_container(container) for container in containers]
 
@@ -124,6 +129,7 @@ def stop_container(container_id: str):
     db = SessionLocal()
 
     try:
+        client = get_docker_client()
         container = client.containers.get(container_id)
         full_container_id = container.id
 
@@ -157,6 +163,7 @@ def restart_container(container_id: str):
     db = SessionLocal()
 
     try:
+        client = get_docker_client()
         container = client.containers.get(container_id)
         full_container_id = container.id
 
@@ -188,6 +195,7 @@ def restart_container(container_id: str):
 @app.get("/containers/{container_id}/inspect")
 def inspect_container(container_id: str):
     try:
+        client = get_docker_client()
         container = client.containers.get(container_id)
         return {
             "id": container.id[:12],
@@ -206,6 +214,7 @@ def inspect_container(container_id: str):
 @app.get("/containers/{container_id}/logs")
 def get_container_logs(container_id: str):
     try:
+        client = get_docker_client()
         container = client.containers.get(container_id)
         logs = container.logs(tail=200).decode("utf-8", errors="replace")
 
@@ -230,6 +239,7 @@ def delete_container(container_id: str):
     db = SessionLocal()
 
     try:
+        client = get_docker_client()
         container = client.containers.get(container_id)
         full_container_id = container.id
 
@@ -316,6 +326,7 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
     log_stream = None
 
     try:
+        client = get_docker_client()
         container = client.containers.get(container_id)
         log_stream = container.logs(stream=True, follow=True, tail=50)
 
@@ -341,6 +352,7 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
 @app.get("/containers/{container_id}/metrics")
 def get_container_metrics(container_id: str):
     try:
+        client = get_docker_client()
         container = client.containers.get(container_id)
         stats = container.stats(stream=False)
 
@@ -386,6 +398,7 @@ def get_container_metrics(container_id: str):
 @app.get("/containers/{container_id}/health")
 def get_container_health(container_id: str):
     try:
+        client = get_docker_client()
         container = client.containers.get(container_id)
         container.reload()
 
