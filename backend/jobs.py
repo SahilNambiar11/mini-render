@@ -1,12 +1,15 @@
 import os
 import re
 import time
+import logging
 
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 
 from database import SessionLocal
 from models import Deployment
+
+logger = logging.getLogger(__name__)
 
 
 def load_kubernetes_config():
@@ -105,6 +108,63 @@ def build_service(name: str, container_port: int):
     )
 
 
+def get_kubernetes_deployment_status(k8s_name: str) -> str:
+    load_kubernetes_config()
+    namespace = get_namespace()
+    apps_api = client.AppsV1Api()
+    core_api = client.CoreV1Api()
+
+    try:
+        k8s_deployment = apps_api.read_namespaced_deployment(
+            name=k8s_name,
+            namespace=namespace,
+        )
+    except ApiException as exc:
+        if exc.status == 404:
+            return "deleted"
+        raise
+
+    desired_replicas = k8s_deployment.spec.replicas or 0
+    if desired_replicas == 0:
+        return "stopped"
+
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"app={k8s_name}",
+    )
+
+    if not pods.items:
+        return "pending"
+
+    for pod in pods.items:
+        phase = (pod.status.phase or "unknown").lower()
+
+        if phase == "failed":
+            return "failed"
+
+        for container_status in pod.status.container_statuses or []:
+            waiting = (
+                container_status.state.waiting
+                if container_status.state
+                else None
+            )
+
+            if waiting and waiting.reason in {
+                "ImagePullBackOff",
+                "ErrImagePull",
+                "CrashLoopBackOff",
+            }:
+                return "failed"
+
+            if phase == "running" and container_status.ready:
+                return "running"
+
+        if phase == "pending":
+            return "pending"
+
+    return (pods.items[0].status.phase or "unknown").lower()
+
+
 def deploy_container_job(deployment_id: int, image: str, container_port: int, name: str):
     db = SessionLocal()
 
@@ -120,12 +180,18 @@ def deploy_container_job(deployment_id: int, image: str, container_port: int, na
 
         deployment.status = "deploying"
         db.commit()
+        logger.info("Deployment %s marked deploying", deployment_id)
 
         load_kubernetes_config()
         namespace = get_namespace()
         k8s_name = make_kubernetes_name(name, f"deployment-{deployment_id}")
         apps_api = client.AppsV1Api()
         core_api = client.CoreV1Api()
+        logger.info(
+            "Creating Kubernetes resources for deployment %s as %s",
+            deployment_id,
+            k8s_name,
+        )
 
         delete_if_exists(
             apps_api.delete_namespaced_deployment,
@@ -150,10 +216,16 @@ def deploy_container_job(deployment_id: int, image: str, container_port: int, na
         )
 
         deployment.container_id = k8s_name
-        deployment.status = "running"
+        deployment.status = get_kubernetes_deployment_status(k8s_name)
         db.commit()
+        logger.info(
+            "Deployment %s Kubernetes resources created with status %s",
+            deployment_id,
+            deployment.status,
+        )
 
     except Exception:
+        logger.exception("Deployment %s failed during Kubernetes creation", deployment_id)
         deployment = (
             db.query(Deployment)
             .filter(Deployment.id == deployment_id)

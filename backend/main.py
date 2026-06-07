@@ -11,6 +11,7 @@ from jobs import (
     delete_if_exists,
     deploy_container_job,
     get_namespace,
+    get_kubernetes_deployment_status,
     load_kubernetes_config,
     make_kubernetes_name,
 )
@@ -19,6 +20,9 @@ from starlette.concurrency import iterate_in_threadpool
 from kubernetes import client as k8s_client, watch
 from kubernetes.client.exceptions import ApiException
 import requests
+import logging
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -43,7 +47,46 @@ def find_deployment_by_k8s_name(db, k8s_name: str):
     )
 
 
+def refresh_deployment_status(db, deployment):
+    if not deployment.container_id:
+        return deployment.status
+
+    if (deployment.status or "").lower() == "deleted":
+        return deployment.status
+
+    try:
+        refreshed_status = get_kubernetes_deployment_status(
+            deployment.container_id
+        )
+    except Exception:
+        logger.exception(
+            "Failed to refresh Kubernetes status for deployment %s",
+            deployment.id,
+        )
+        return deployment.status
+
+    if deployment.status != refreshed_status:
+        logger.info(
+            "Refreshed deployment %s status from %s to %s",
+            deployment.id,
+            deployment.status,
+            refreshed_status,
+        )
+        deployment.status = refreshed_status
+        db.commit()
+
+    return deployment.status
+
+
 def get_deployment_status(k8s_deployment):
+    try:
+        return get_kubernetes_deployment_status(k8s_deployment.metadata.name)
+    except Exception:
+        logger.exception(
+            "Failed to get pod-aware status for Kubernetes deployment %s",
+            k8s_deployment.metadata.name,
+        )
+
     desired = k8s_deployment.spec.replicas or 0
     ready = k8s_deployment.status.ready_replicas or 0
 
@@ -298,7 +341,7 @@ def restart_container(container_id: str):
         deployment = find_deployment_by_k8s_name(db, container_id)
 
         if deployment:
-            deployment.status = "running"
+            deployment.status = get_kubernetes_deployment_status(container_id)
             db.commit()
 
         service = core_api.read_namespaced_service(
@@ -432,6 +475,9 @@ def list_deployments():
     try:
         deployments = db.query(Deployment).all()
 
+        for deployment in deployments:
+            refresh_deployment_status(db, deployment)
+
         return [
             {
                 "id": deployment.id,
@@ -464,6 +510,8 @@ def get_deployment(deployment_id: int):
 
         if not deployment:
             raise HTTPException(status_code=404, detail="Deployment not found")
+
+        refresh_deployment_status(db, deployment)
 
         return {
             "id": deployment.id,
