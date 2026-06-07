@@ -21,6 +21,7 @@ from kubernetes import client as k8s_client, watch
 from kubernetes.client.exceptions import ApiException
 import requests
 import logging
+import ast
 
 logger = logging.getLogger(__name__)
 
@@ -132,14 +133,38 @@ def get_first_pod_for_deployment(core_api, namespace: str, name: str):
 
 def iter_log_lines(log_stream):
     for chunk in log_stream:
-        if isinstance(chunk, bytes):
-            text = chunk.decode("utf-8", errors="replace")
-        else:
-            text = str(chunk)
+        text = normalize_log_text(chunk)
+
+        if not text:
+            continue
 
         for line in text.splitlines(True):
             if line:
                 yield line
+
+
+def normalize_log_text(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+
+    if isinstance(value, str):
+        stripped = value.strip()
+
+        if stripped.startswith(("b'", 'b"')):
+            try:
+                parsed = ast.literal_eval(stripped)
+
+                if isinstance(parsed, bytes):
+                    return parsed.decode("utf-8", errors="replace")
+            except (SyntaxError, ValueError):
+                pass
+
+        return value
+
+    return str(value)
 
 
 def read_pod_log_stream(core_api):
@@ -436,10 +461,8 @@ def get_container_logs(container_id: str):
             namespace=namespace,
             tail_lines=200,
         )
-        if isinstance(logs, bytes):
-            logs = logs.decode("utf-8", errors="replace")
 
-        return {"logs": logs}
+        return {"logs": normalize_log_text(logs)}
 
     except ApiException as e:
         if e.status == 404:
