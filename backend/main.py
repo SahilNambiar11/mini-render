@@ -5,10 +5,19 @@ from models import Deployment
 from datetime import datetime, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from task_queue import deployment_queue
-from jobs import deploy_container_job
+from jobs import (
+    build_deployment,
+    build_service,
+    delete_if_exists,
+    deploy_container_job,
+    get_namespace,
+    load_kubernetes_config,
+    make_kubernetes_name,
+)
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.concurrency import iterate_in_threadpool
-import docker
+from kubernetes import client as k8s_client, watch
+from kubernetes.client.exceptions import ApiException
 import requests
 
 app = FastAPI()
@@ -21,8 +30,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_docker_client():
-    return docker.from_env()
+def get_kubernetes_clients():
+    load_kubernetes_config()
+    return get_namespace(), k8s_client.AppsV1Api(), k8s_client.CoreV1Api()
+
+
+def find_deployment_by_k8s_name(db, k8s_name: str):
+    return (
+        db.query(Deployment)
+        .filter(Deployment.container_id == k8s_name)
+        .first()
+    )
+
+
+def get_deployment_status(k8s_deployment):
+    desired = k8s_deployment.spec.replicas or 0
+    ready = k8s_deployment.status.ready_replicas or 0
+
+    if desired == 0:
+        return "stopped"
+    if ready >= desired:
+        return "running"
+
+    return "deploying"
+
+
+def format_kubernetes_deployment(k8s_deployment, service=None):
+    return {
+        "id": k8s_deployment.metadata.name,
+        "name": k8s_deployment.metadata.name,
+        "status": get_deployment_status(k8s_deployment),
+        "image": [
+            container.image
+            for container in k8s_deployment.spec.template.spec.containers
+        ],
+        "ports": [
+            {
+                "port": port.port,
+                "target_port": port.target_port,
+                "type": service.spec.type if service else None,
+            }
+            for port in service.spec.ports
+        ] if service else [],
+    }
+
+
+def get_first_pod_for_deployment(core_api, namespace: str, name: str):
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"app={name}",
+    )
+
+    if not pods.items:
+        raise HTTPException(status_code=404, detail="Pod not found")
+
+    return pods.items[0]
 
 
 class ContainerCreateRequest(BaseModel):
@@ -40,11 +102,12 @@ def health():
 
 @app.get("/docker")
 def docker_status():
-    client = get_docker_client()
-    version = client.version()
+    _, apps_api, _ = get_kubernetes_clients()
+    version = apps_api.get_api_resources()
     return {
         "status": "connected",
-        "docker_version": version.get("Version")
+        "runtime": "kubernetes",
+        "api_group": version.group_version,
     }
 
 @app.post("/containers")
@@ -94,20 +157,44 @@ def create_container(request: ContainerCreateRequest):
 @app.post("/containers/nginx")
 def run_nginx():
     try:
-        client = get_docker_client()
-        container = client.containers.run(
-            "nginx",
-            detach=True,
-            ports={"80/tcp": None}
+        namespace, apps_api, core_api = get_kubernetes_clients()
+        name = make_kubernetes_name("nginx", "nginx")
+        container_port = 80
+
+        delete_if_exists(
+            apps_api.delete_namespaced_deployment,
+            apps_api.read_namespaced_deployment,
+            name,
+            namespace,
+        )
+        delete_if_exists(
+            core_api.delete_namespaced_service,
+            core_api.read_namespaced_service,
+            name,
+            namespace,
         )
 
-        container.reload()
+        k8s_deployment = apps_api.create_namespaced_deployment(
+            namespace=namespace,
+            body=build_deployment(name, "nginx", container_port),
+        )
+        service = core_api.create_namespaced_service(
+            namespace=namespace,
+            body=build_service(name, container_port),
+        )
 
         return {
-            "id": container.id[:12],
-            "name": container.name,
-            "status": container.status,
-            "ports": container.attrs["NetworkSettings"]["Ports"]
+            "id": k8s_deployment.metadata.name,
+            "name": k8s_deployment.metadata.name,
+            "status": get_deployment_status(k8s_deployment),
+            "ports": [
+                {
+                    "port": port.port,
+                    "target_port": port.target_port,
+                    "type": service.spec.type,
+                }
+                for port in service.spec.ports
+            ],
         }
 
     except Exception as e:
@@ -116,9 +203,20 @@ def run_nginx():
 @app.get("/containers")
 def list_containers():
     try:
-        client = get_docker_client()
-        containers = client.containers.list(all=True)
-        return [format_container(container) for container in containers]
+        namespace, apps_api, core_api = get_kubernetes_clients()
+        deployments = apps_api.list_namespaced_deployment(namespace=namespace)
+        services = {
+            service.metadata.name: service
+            for service in core_api.list_namespaced_service(namespace=namespace).items
+        }
+
+        return [
+            format_kubernetes_deployment(
+                deployment,
+                services.get(deployment.metadata.name),
+            )
+            for deployment in deployments.items
+        ]
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -129,28 +227,38 @@ def stop_container(container_id: str):
     db = SessionLocal()
 
     try:
-        client = get_docker_client()
-        container = client.containers.get(container_id)
-        full_container_id = container.id
-
-        container.stop()
-        container.reload()
-
-        deployment = (
-            db.query(Deployment)
-            .filter(Deployment.container_id == full_container_id)
-            .first()
+        namespace, apps_api, core_api = get_kubernetes_clients()
+        apps_api.patch_namespaced_deployment_scale(
+            name=container_id,
+            namespace=namespace,
+            body={"spec": {"replicas": 0}},
         )
+
+        deployment = find_deployment_by_k8s_name(db, container_id)
 
         if deployment:
             deployment.status = "stopped"
             db.commit()
 
+        k8s_deployment = apps_api.read_namespaced_deployment(
+            name=container_id,
+            namespace=namespace,
+        )
+        service = core_api.read_namespaced_service(
+            name=container_id,
+            namespace=namespace,
+        )
+
         return {
             "message": "container stopped",
-            "container": format_container(container)
+            "container": format_kubernetes_deployment(k8s_deployment, service)
         }
 
+    except ApiException as e:
+        db.rollback()
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -163,28 +271,51 @@ def restart_container(container_id: str):
     db = SessionLocal()
 
     try:
-        client = get_docker_client()
-        container = client.containers.get(container_id)
-        full_container_id = container.id
+        namespace, apps_api, core_api = get_kubernetes_clients()
+        restarted_at = datetime.now(timezone.utc).isoformat()
 
-        container.restart()
-        container.reload()
-
-        deployment = (
-            db.query(Deployment)
-            .filter(Deployment.container_id == full_container_id)
-            .first()
+        apps_api.patch_namespaced_deployment_scale(
+            name=container_id,
+            namespace=namespace,
+            body={"spec": {"replicas": 1}},
         )
+        k8s_deployment = apps_api.patch_namespaced_deployment(
+            name=container_id,
+            namespace=namespace,
+            body={
+                "spec": {
+                    "template": {
+                        "metadata": {
+                            "annotations": {
+                                "mini-render/restarted-at": restarted_at
+                            }
+                        }
+                    }
+                }
+            },
+        )
+
+        deployment = find_deployment_by_k8s_name(db, container_id)
 
         if deployment:
             deployment.status = "running"
             db.commit()
 
+        service = core_api.read_namespaced_service(
+            name=container_id,
+            namespace=namespace,
+        )
+
         return {
             "message": "container restarted",
-            "container": format_container(container)
+            "container": format_kubernetes_deployment(k8s_deployment, service)
         }
 
+    except ApiException as e:
+        db.rollback()
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -195,61 +326,83 @@ def restart_container(container_id: str):
 @app.get("/containers/{container_id}/inspect")
 def inspect_container(container_id: str):
     try:
-        client = get_docker_client()
-        container = client.containers.get(container_id)
+        namespace, apps_api, core_api = get_kubernetes_clients()
+        k8s_deployment = apps_api.read_namespaced_deployment(
+            name=container_id,
+            namespace=namespace,
+        )
+        service = core_api.read_namespaced_service(
+            name=container_id,
+            namespace=namespace,
+        )
         return {
-            "id": container.id[:12],
-            "name": container.name,
-            "status": container.status,
-            "image": container.image.tags,
-            "ports": container.attrs["NetworkSettings"]["Ports"],
-            "created": container.attrs["Created"],
-            "state": container.attrs["State"],
-            "network_settings": container.attrs["NetworkSettings"]
+            "id": k8s_deployment.metadata.name,
+            "name": k8s_deployment.metadata.name,
+            "status": get_deployment_status(k8s_deployment),
+            "image": [
+                container.image
+                for container in k8s_deployment.spec.template.spec.containers
+            ],
+            "ports": [
+                {
+                    "port": port.port,
+                    "target_port": port.target_port,
+                    "type": service.spec.type,
+                }
+                for port in service.spec.ports
+            ],
+            "created": k8s_deployment.metadata.creation_timestamp,
+            "state": k8s_deployment.status.to_dict(),
+            "network_settings": service.spec.to_dict(),
         }
 
+    except ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/containers/{container_id}/logs")
 def get_container_logs(container_id: str):
     try:
-        client = get_docker_client()
-        container = client.containers.get(container_id)
-        logs = container.logs(tail=200).decode("utf-8", errors="replace")
+        namespace, _, core_api = get_kubernetes_clients()
+        pod = get_first_pod_for_deployment(core_api, namespace, container_id)
+        logs = core_api.read_namespaced_pod_log(
+            name=pod.metadata.name,
+            namespace=namespace,
+            tail_lines=200,
+        )
 
         return {"logs": logs}
 
-    except docker.errors.NotFound:
-        raise HTTPException(status_code=404, detail="Container not found")
+    except ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Pod not found")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-def format_container(container):
-    return {
-        "id": container.id[:12],
-        "name": container.name,
-        "status": container.status,
-        "image": container.image.tags,
-        "ports": container.attrs["NetworkSettings"]["Ports"]
-    }
 
 @app.delete("/containers/{container_id}")
 def delete_container(container_id: str):
     db = SessionLocal()
 
     try:
-        client = get_docker_client()
-        container = client.containers.get(container_id)
-        full_container_id = container.id
-
-        container.remove(force=True)
-
-        deployment = (
-            db.query(Deployment)
-            .filter(Deployment.container_id == full_container_id)
-            .first()
+        namespace, apps_api, core_api = get_kubernetes_clients()
+        delete_if_exists(
+            apps_api.delete_namespaced_deployment,
+            apps_api.read_namespaced_deployment,
+            container_id,
+            namespace,
         )
+        delete_if_exists(
+            core_api.delete_namespaced_service,
+            core_api.read_namespaced_service,
+            container_id,
+            namespace,
+        )
+
+        deployment = find_deployment_by_k8s_name(db, container_id)
 
         if deployment:
             deployment.status = "deleted"
@@ -258,9 +411,14 @@ def delete_container(container_id: str):
 
         return {
             "message": "container deleted",
-            "container_id": container_id[:12]
+            "container_id": container_id
         }
 
+    except ApiException as e:
+        db.rollback()
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -279,7 +437,7 @@ def list_deployments():
                 "id": deployment.id,
                 "name": deployment.name,
                 "image": deployment.image,
-                "container_id": deployment.container_id[:12] if deployment.container_id else None,
+                "container_id": deployment.container_id,
                 "status": deployment.status,
                 "created_at": deployment.created_at,
                 "deleted_at": deployment.deleted_at
@@ -311,7 +469,7 @@ def get_deployment(deployment_id: int):
             "id": deployment.id,
             "name": deployment.name,
             "image": deployment.image,
-            "container_id": deployment.container_id[:12],
+            "container_id": deployment.container_id,
             "status": deployment.status,
             "created_at": deployment.created_at,
             "deleted_at": deployment.deleted_at
@@ -326,19 +484,24 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
     log_stream = None
 
     try:
-        client = get_docker_client()
-        container = client.containers.get(container_id)
-        log_stream = container.logs(stream=True, follow=True, tail=50)
+        namespace, _, core_api = get_kubernetes_clients()
+        pod = get_first_pod_for_deployment(core_api, namespace, container_id)
+        log_stream = watch.Watch().stream(
+            core_api.read_namespaced_pod_log,
+            name=pod.metadata.name,
+            namespace=namespace,
+            follow=True,
+            tail_lines=50,
+        )
 
         async for line in iterate_in_threadpool(log_stream):
-            decoded_line = line.decode("utf-8", errors="replace")
-            await websocket.send_text(decoded_line)
+            await websocket.send_text(str(line))
 
     except WebSocketDisconnect:
         print("Client disconnected from log stream")
 
-    except docker.errors.NotFound:
-        await websocket.send_text("Error: Container not found")
+    except ApiException as e:
+        await websocket.send_text(f"Error: {str(e)}")
         await websocket.close()
 
     except Exception as e:
@@ -352,45 +515,27 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
 @app.get("/containers/{container_id}/metrics")
 def get_container_metrics(container_id: str):
     try:
-        client = get_docker_client()
-        container = client.containers.get(container_id)
-        stats = container.stats(stream=False)
-
-        cpu_delta = (
-            stats["cpu_stats"]["cpu_usage"]["total_usage"]
-            - stats["precpu_stats"]["cpu_usage"]["total_usage"]
+        namespace, apps_api, core_api = get_kubernetes_clients()
+        k8s_deployment = apps_api.read_namespaced_deployment(
+            name=container_id,
+            namespace=namespace,
         )
-
-        system_delta = (
-            stats["cpu_stats"]["system_cpu_usage"]
-            - stats["precpu_stats"]["system_cpu_usage"]
-        )
-
-        online_cpus = stats["cpu_stats"].get("online_cpus", 1)
-
-        cpu_percent = 0.0
-        if system_delta > 0 and cpu_delta > 0:
-            cpu_percent = (cpu_delta / system_delta) * online_cpus * 100.0
-
-        memory_usage = stats["memory_stats"].get("usage", 0)
-        memory_limit = stats["memory_stats"].get("limit", 1)
-
-        memory_usage_mb = memory_usage / (1024 * 1024)
-        memory_limit_mb = memory_limit / (1024 * 1024)
-        memory_percent = (memory_usage / memory_limit) * 100 if memory_limit else 0
+        get_first_pod_for_deployment(core_api, namespace, container_id)
 
         return {
-            "container_id": container.id,
-            "name": container.name,
-            "status": container.status,
-            "cpu_percent": round(cpu_percent, 2),
-            "memory_usage_mb": round(memory_usage_mb, 2),
-            "memory_limit_mb": round(memory_limit_mb, 2),
-            "memory_percent": round(memory_percent, 2),
+            "container_id": k8s_deployment.metadata.name,
+            "name": k8s_deployment.metadata.name,
+            "status": get_deployment_status(k8s_deployment),
+            "cpu_percent": None,
+            "memory_usage_mb": None,
+            "memory_limit_mb": None,
+            "memory_percent": None,
         }
 
-    except docker.errors.NotFound:
-        raise HTTPException(status_code=404, detail="Container not found")
+    except ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        raise HTTPException(status_code=500, detail=str(e))
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -398,66 +543,68 @@ def get_container_metrics(container_id: str):
 @app.get("/containers/{container_id}/health")
 def get_container_health(container_id: str):
     try:
-        client = get_docker_client()
-        container = client.containers.get(container_id)
-        container.reload()
+        namespace, apps_api, core_api = get_kubernetes_clients()
+        k8s_deployment = apps_api.read_namespaced_deployment(
+            name=container_id,
+            namespace=namespace,
+        )
+        service = core_api.read_namespaced_service(
+            name=container_id,
+            namespace=namespace,
+        )
+        status = get_deployment_status(k8s_deployment)
 
-        if container.status != "running":
+        if status != "running":
             return {
-                "container_id": container.id,
-                "status": container.status,
+                "container_id": k8s_deployment.metadata.name,
+                "status": status,
                 "health": "unhealthy",
-                "reason": "Container is not running",
+                "reason": "Deployment does not have ready replicas",
             }
 
-        ports = container.attrs["NetworkSettings"]["Ports"]
-
-        host_port = None
-        container_port = None
-
-        for port_key, bindings in ports.items():
-            if bindings:
-                container_port = port_key
-                host_port = bindings[0]["HostPort"]
-                break
-
-        if not host_port:
+        if not service.spec.ports:
             return {
-                "container_id": container.id,
-                "status": container.status,
+                "container_id": k8s_deployment.metadata.name,
+                "status": status,
                 "health": "unhealthy",
-                "reason": "No exposed host port found",
+                "reason": "No service port found",
             }
 
-        url = f"http://127.0.0.1:{host_port}"
+        service_port = service.spec.ports[0]
+        checked_url = (
+            f"http://{service.metadata.name}.{namespace}.svc.cluster.local:"
+            f"{service_port.port}"
+        )
 
         try:
-            response = requests.get(url, timeout=3)
+            response = requests.get(checked_url, timeout=3)
             is_healthy = 200 <= response.status_code < 400
 
             return {
-                "container_id": container.id,
-                "status": container.status,
+                "container_id": k8s_deployment.metadata.name,
+                "status": status,
                 "health": "healthy" if is_healthy else "unhealthy",
-                "checked_url": url,
-                "container_port": container_port,
-                "host_port": host_port,
+                "checked_url": checked_url,
+                "container_port": str(service_port.target_port),
+                "host_port": str(service_port.port),
                 "status_code": response.status_code,
             }
 
         except requests.RequestException as e:
             return {
-                "container_id": container.id,
-                "status": container.status,
+                "container_id": k8s_deployment.metadata.name,
+                "status": status,
                 "health": "unhealthy",
-                "checked_url": url,
-                "container_port": container_port,
-                "host_port": host_port,
+                "checked_url": checked_url,
+                "container_port": str(service_port.target_port),
+                "host_port": str(service_port.port),
                 "reason": str(e),
             }
 
-    except docker.errors.NotFound:
-        raise HTTPException(status_code=404, detail="Container not found")
+    except ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        raise HTTPException(status_code=500, detail=str(e))
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

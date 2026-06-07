@@ -1,6 +1,5 @@
 fastapi==0.124.2
 uvicorn==0.38.0
-docker==7.1.0
 kubernetes
 SQLAlchemy==2.0.49
 psycopg2-binary==2.9.11
