@@ -239,6 +239,19 @@ def format_deployment_record(deployment):
         "deleted_at": deployment.deleted_at,
     }
 
+
+def get_deployment_resource_settings(db, k8s_name: str):
+    deployment = find_deployment_by_k8s_name(db, k8s_name)
+
+    return {
+        "cpu_request": deployment.cpu_request if deployment else DEFAULT_CPU_REQUEST,
+        "cpu_limit": deployment.cpu_limit if deployment else DEFAULT_CPU_LIMIT,
+        "memory_request": (
+            deployment.memory_request if deployment else DEFAULT_MEMORY_REQUEST
+        ),
+        "memory_limit": deployment.memory_limit if deployment else DEFAULT_MEMORY_LIMIT,
+    }
+
 @app.get("/")
 def root():
     return {"message": "Mini Render Backend Running"}
@@ -656,23 +669,51 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
 
 @app.get("/containers/{container_id}/metrics")
 def get_container_metrics(container_id: str):
+    db = SessionLocal()
+
     try:
         namespace, apps_api, core_api = get_kubernetes_clients()
         k8s_deployment = apps_api.read_namespaced_deployment(
             name=container_id,
             namespace=namespace,
         )
-        get_first_pod_for_deployment(core_api, namespace, container_id)
-
-        return {
+        pod = get_first_pod_for_deployment(core_api, namespace, container_id)
+        resource_settings = get_deployment_resource_settings(db, container_id)
+        response = {
             "container_id": k8s_deployment.metadata.name,
             "name": k8s_deployment.metadata.name,
             "status": get_deployment_status(k8s_deployment),
-            "cpu_percent": None,
-            "memory_usage_mb": None,
-            "memory_limit_mb": None,
-            "memory_percent": None,
+            "cpu_usage": "Unavailable",
+            "memory_usage": "Unavailable",
+            **resource_settings,
         }
+
+        try:
+            # Metrics Server exposes pod usage through the aggregated
+            # metrics.k8s.io API, which is not part of CoreV1Api. The
+            # Kubernetes client reads it through CustomObjectsApi.
+            metrics_api = k8s_client.CustomObjectsApi()
+            pod_metrics = metrics_api.get_namespaced_custom_object(
+                group="metrics.k8s.io",
+                version="v1beta1",
+                namespace=namespace,
+                plural="pods",
+                name=pod.metadata.name,
+            )
+            containers = pod_metrics.get("containers", [])
+
+            if containers:
+                usage = containers[0].get("usage", {})
+                response["cpu_usage"] = usage.get("cpu", "Unavailable")
+                response["memory_usage"] = usage.get("memory", "Unavailable")
+
+        except ApiException:
+            logger.exception(
+                "Metrics API unavailable for pod %s",
+                pod.metadata.name,
+            )
+
+        return response
 
     except ApiException as e:
         if e.status == 404:
@@ -681,6 +722,9 @@ def get_container_metrics(container_id: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        db.close()
 
 @app.get("/containers/{container_id}/health")
 def get_container_health(container_id: str):

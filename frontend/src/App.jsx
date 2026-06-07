@@ -187,15 +187,6 @@ function formatValue(value) {
   return String(value);
 }
 
-function formatMetric(value, suffix = "%") {
-  if (value === null || value === undefined) return "Unavailable";
-
-  const number = Number(value);
-  if (Number.isNaN(number)) return "Unavailable";
-
-  return `${number.toFixed(2)}${suffix}`;
-}
-
 function MetricsPanel({
   metrics,
   metricsError,
@@ -223,20 +214,28 @@ function MetricsPanel({
         {!metricsLoading && !metricsError && metrics && (
           <div className="metrics-grid">
             <div>
-              <span>CPU</span>
-              <strong>{formatMetric(metrics.cpu_percent)}</strong>
+              <span>CPU Usage</span>
+              <strong>{formatValue(metrics.cpu_usage)}</strong>
             </div>
             <div>
               <span>Memory Usage</span>
-              <strong>{formatMetric(metrics.memory_usage_mb, " MB")}</strong>
+              <strong>{formatValue(metrics.memory_usage)}</strong>
+            </div>
+            <div>
+              <span>CPU Request</span>
+              <strong>{formatValue(metrics.cpu_request)}</strong>
+            </div>
+            <div>
+              <span>CPU Limit</span>
+              <strong>{formatValue(metrics.cpu_limit)}</strong>
+            </div>
+            <div>
+              <span>Memory Request</span>
+              <strong>{formatValue(metrics.memory_request)}</strong>
             </div>
             <div>
               <span>Memory Limit</span>
-              <strong>{formatMetric(metrics.memory_limit_mb, " MB")}</strong>
-            </div>
-            <div>
-              <span>Memory</span>
-              <strong>{formatMetric(metrics.memory_percent)}</strong>
+              <strong>{formatValue(metrics.memory_limit)}</strong>
             </div>
           </div>
         )}
