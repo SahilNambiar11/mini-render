@@ -38,12 +38,52 @@ jobs:
             sudo kubectl apply -f k8s/backend.yaml
             sudo kubectl apply -f k8s/worker.yaml
 
+            # Wait for database/cache workloads to roll out
+            sudo kubectl rollout status deployment/postgres --timeout=120s
+            sudo kubectl rollout status deployment/redis --timeout=120s
+
+            # Wait for Postgres to accept TCP connections inside the cluster
+            postgres_ready=false
+            for i in $(seq 1 30); do
+              if sudo kubectl exec deployment/postgres -- pg_isready -U sahil -d minirender; then
+                echo "Postgres is ready"
+                postgres_ready=true
+                break
+              fi
+
+              echo "Waiting for Postgres..."
+              sleep 2
+            done
+
+            if [ "$postgres_ready" != "true" ]; then
+              echo "Postgres did not become ready in time"
+              exit 1
+            fi
+
+            # Wait for Redis to accept commands inside the cluster
+            redis_ready=false
+            for i in $(seq 1 30); do
+              if sudo kubectl exec deployment/redis -- redis-cli ping; then
+                echo "Redis is ready"
+                redis_ready=true
+                break
+              fi
+
+              echo "Waiting for Redis..."
+              sleep 2
+            done
+
+            if [ "$redis_ready" != "true" ]; then
+              echo "Redis did not become ready in time"
+              exit 1
+            fi
+
             # Restart Kubernetes backend/worker
             sudo kubectl rollout restart deployment/backend
             sudo kubectl rollout restart deployment/worker
 
-            sudo kubectl rollout status deployment/backend
-            sudo kubectl rollout status deployment/worker
+            sudo kubectl rollout status deployment/backend --timeout=120s
+            sudo kubectl rollout status deployment/worker --timeout=120s
 
             # Ensure DB tables exist
             sudo kubectl exec deployment/backend -- python create_tables.py
