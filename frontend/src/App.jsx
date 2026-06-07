@@ -60,6 +60,16 @@ function formatResources(deployment, type) {
   }`;
 }
 
+function getDeploymentAppUrl(deployment) {
+  const status = (deployment.status || "").toLowerCase();
+
+  if (status !== "running" || !deployment.app_url) {
+    return "";
+  }
+
+  return deployment.app_url;
+}
+
 function Spinner({ label = "Loading" }) {
   return (
     <span className="spinner-wrap" aria-live="polite">
@@ -799,6 +809,7 @@ function App() {
                   <th>Image</th>
                   <th>Status</th>
                   <th>Container ID</th>
+                  <th>App URL</th>
                   <th>Requests</th>
                   <th>Limits</th>
                   <th>Created</th>
@@ -812,6 +823,7 @@ function App() {
                   const isBusy =
                     pendingAction.endsWith(rowActionPrefix) ||
                     pendingAction === "deploy";
+                  const appUrl = getDeploymentAppUrl(deployment);
 
                   return (
                     <tr key={deployment.id}>
@@ -827,6 +839,20 @@ function App() {
                       </td>
                       <td>
                         <code>{shortId(deployment.container_id)}</code>
+                      </td>
+                      <td>
+                        {appUrl ? (
+                          <a
+                            className="table-link"
+                            href={appUrl}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            Open
+                          </a>
+                        ) : (
+                          <span className="muted-inline">No app URL</span>
+                        )}
                       </td>
                       <td>
                         <code>{formatResources(deployment, "requests")}</code>

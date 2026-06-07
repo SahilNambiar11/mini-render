@@ -236,7 +236,7 @@ input:focus {
 
 table {
   width: 100%;
-  min-width: 1180px;
+  min-width: 1260px;
   border-collapse: collapse;
   text-align: left;
 }
@@ -283,6 +283,22 @@ tbody tr:hover {
   display: block;
   color: var(--muted);
   text-align: right;
+}
+
+.muted-inline {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.table-link {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.table-link:hover {
+  text-decoration: underline;
 }
 
 .logs-actions {

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 from database import SessionLocal
 from models import Deployment
@@ -29,6 +29,7 @@ import ast
 import re
 
 logger = logging.getLogger(__name__)
+NON_HTTP_PUBLIC_PORTS = {5432, 6379, 3306, 27017, 5672, 9092}
 
 app = FastAPI()
 
@@ -229,8 +230,10 @@ def format_deployment_record(deployment):
         "id": deployment.id,
         "name": deployment.name,
         "image": deployment.image,
+        "container_port": deployment.container_port,
         "container_id": deployment.container_id,
         "status": deployment.status,
+        "app_url": get_app_url(deployment),
         "cpu_request": deployment.cpu_request,
         "memory_request": deployment.memory_request,
         "cpu_limit": deployment.cpu_limit,
@@ -238,6 +241,19 @@ def format_deployment_record(deployment):
         "created_at": deployment.created_at,
         "deleted_at": deployment.deleted_at,
     }
+
+
+def get_app_url(deployment):
+    if (deployment.status or "").lower() != "running":
+        return None
+
+    if not deployment.container_id or not deployment.container_port:
+        return None
+
+    if deployment.container_port in NON_HTTP_PUBLIC_PORTS:
+        return None
+
+    return f"/api/apps/{deployment.container_id}/"
 
 
 def get_deployment_resource_settings(db, k8s_name: str):
@@ -270,6 +286,84 @@ def docker_status():
         "api_group": version.group_version,
     }
 
+
+# Nginx/FastAPI reverse-proxy app routing. This is a small single-node demo
+# alternative to Kubernetes Ingress while Mini Render is not using Traefik.
+@app.get("/apps/{deployment_name}")
+@app.get("/apps/{deployment_name}/{path:path}")
+def proxy_deployed_app(deployment_name: str, request: Request, path: str = ""):
+    db = SessionLocal()
+
+    try:
+        deployment = find_deployment_by_k8s_name(db, deployment_name)
+
+        if not deployment:
+            deployment = (
+                db.query(Deployment)
+                .filter(Deployment.name == deployment_name)
+                .first()
+            )
+
+        if not deployment:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+
+        refresh_deployment_status(db, deployment)
+
+        if (deployment.status or "").lower() == "deleted":
+            raise HTTPException(status_code=404, detail="Deployment not found")
+
+        if (deployment.status or "").lower() != "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Deployment is not running",
+            )
+
+        if not deployment.container_id or not deployment.container_port:
+            raise HTTPException(
+                status_code=400,
+                detail="Deployment does not have a routable HTTP service",
+            )
+
+        if deployment.container_port in NON_HTTP_PUBLIC_PORTS:
+            raise HTTPException(
+                status_code=400,
+                detail="Deployment port is not exposed as an HTTP app",
+            )
+
+        target_path = path or ""
+        target_url = (
+            f"http://{deployment.container_id}:{deployment.container_port}/"
+            f"{target_path}"
+        )
+
+        if request.url.query:
+            target_url = f"{target_url}?{request.url.query}"
+
+        proxied_response = requests.get(target_url, timeout=10)
+        content_type = proxied_response.headers.get(
+            "content-type",
+            "application/octet-stream",
+        )
+
+        return Response(
+            content=proxied_response.content,
+            status_code=proxied_response.status_code,
+            media_type=content_type,
+        )
+
+    except HTTPException:
+        raise
+
+    except requests.RequestException as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach deployed app: {str(e)}",
+        )
+
+    finally:
+        db.close()
+
+
 @app.post("/containers")
 def create_container(request: ContainerCreateRequest):
     db = SessionLocal()
@@ -280,6 +374,7 @@ def create_container(request: ContainerCreateRequest):
         deployment = Deployment(
             name=request.name,
             image=request.image,
+            container_port=request.container_port,
             container_id=None,
             status="queued",
             cpu_request=request.cpu_request,

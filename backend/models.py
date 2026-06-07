@@ -10,6 +10,7 @@ class Deployment(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     image = Column(String, nullable=False)
+    container_port = Column(Integer, nullable=True)
     container_id = Column(String, nullable=True)
     status = Column(String, nullable=False, default="running")
     cpu_request = Column(String, nullable=False, default="100m")
