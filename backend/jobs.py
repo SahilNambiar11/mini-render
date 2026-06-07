@@ -11,6 +11,11 @@ from models import Deployment
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CPU_REQUEST = "100m"
+DEFAULT_MEMORY_REQUEST = "128Mi"
+DEFAULT_CPU_LIMIT = "500m"
+DEFAULT_MEMORY_LIMIT = "512Mi"
+
 
 def load_kubernetes_config():
     try:
@@ -64,7 +69,15 @@ def delete_if_exists(delete_resource, read_resource, name: str, namespace: str):
     wait_for_resource_delete(read_resource, name, namespace)
 
 
-def build_deployment(name: str, image: str, container_port: int):
+def build_deployment(
+    name: str,
+    image: str,
+    container_port: int,
+    cpu_request: str = DEFAULT_CPU_REQUEST,
+    memory_request: str = DEFAULT_MEMORY_REQUEST,
+    cpu_limit: str = DEFAULT_CPU_LIMIT,
+    memory_limit: str = DEFAULT_MEMORY_LIMIT,
+):
     labels = {"app": name}
 
     return client.V1Deployment(
@@ -79,6 +92,16 @@ def build_deployment(name: str, image: str, container_port: int):
                         client.V1Container(
                             name=name,
                             image=image,
+                            resources=client.V1ResourceRequirements(
+                                requests={
+                                    "cpu": cpu_request,
+                                    "memory": memory_request,
+                                },
+                                limits={
+                                    "cpu": cpu_limit,
+                                    "memory": memory_limit,
+                                },
+                            ),
                             ports=[
                                 client.V1ContainerPort(
                                     container_port=container_port
@@ -165,7 +188,16 @@ def get_kubernetes_deployment_status(k8s_name: str) -> str:
     return (pods.items[0].status.phase or "unknown").lower()
 
 
-def deploy_container_job(deployment_id: int, image: str, container_port: int, name: str):
+def deploy_container_job(
+    deployment_id: int,
+    image: str,
+    container_port: int,
+    name: str,
+    cpu_request: str = DEFAULT_CPU_REQUEST,
+    memory_request: str = DEFAULT_MEMORY_REQUEST,
+    cpu_limit: str = DEFAULT_CPU_LIMIT,
+    memory_limit: str = DEFAULT_MEMORY_LIMIT,
+):
     db = SessionLocal()
 
     try:
@@ -177,6 +209,11 @@ def deploy_container_job(deployment_id: int, image: str, container_port: int, na
 
         if not deployment:
             return
+
+        cpu_request = deployment.cpu_request or cpu_request
+        memory_request = deployment.memory_request or memory_request
+        cpu_limit = deployment.cpu_limit or cpu_limit
+        memory_limit = deployment.memory_limit or memory_limit
 
         deployment.status = "deploying"
         db.commit()
@@ -208,7 +245,15 @@ def deploy_container_job(deployment_id: int, image: str, container_port: int, na
 
         apps_api.create_namespaced_deployment(
             namespace=namespace,
-            body=build_deployment(k8s_name, image, container_port),
+            body=build_deployment(
+                k8s_name,
+                image,
+                container_port,
+                cpu_request,
+                memory_request,
+                cpu_limit,
+                memory_limit,
+            ),
         )
         core_api.create_namespaced_service(
             namespace=namespace,

@@ -3,6 +3,10 @@ import "./App.css";
 
 const API_BASE = "/api";
 const WS_BASE = `ws://${window.location.host}/api`;;
+const DEFAULT_CPU_REQUEST = "100m";
+const DEFAULT_MEMORY_REQUEST = "128Mi";
+const DEFAULT_CPU_LIMIT = "500m";
+const DEFAULT_MEMORY_LIMIT = "512Mi";
 
 async function apiRequest(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -42,6 +46,18 @@ function formatDate(value) {
 
 function shortId(value) {
   return value ? value.slice(0, 12) : "Unavailable";
+}
+
+function formatResources(deployment, type) {
+  if (type === "requests") {
+    return `${deployment.cpu_request || DEFAULT_CPU_REQUEST} / ${
+      deployment.memory_request || DEFAULT_MEMORY_REQUEST
+    }`;
+  }
+
+  return `${deployment.cpu_limit || DEFAULT_CPU_LIMIT} / ${
+    deployment.memory_limit || DEFAULT_MEMORY_LIMIT
+  }`;
 }
 
 function Spinner({ label = "Loading" }) {
@@ -358,6 +374,10 @@ function App() {
   const [image, setImage] = useState("nginx");
   const [containerPort, setContainerPort] = useState(80);
   const [name, setName] = useState("");
+  const [cpuRequest, setCpuRequest] = useState(DEFAULT_CPU_REQUEST);
+  const [memoryRequest, setMemoryRequest] = useState(DEFAULT_MEMORY_REQUEST);
+  const [cpuLimit, setCpuLimit] = useState(DEFAULT_CPU_LIMIT);
+  const [memoryLimit, setMemoryLimit] = useState(DEFAULT_MEMORY_LIMIT);
   const [logs, setLogs] = useState("");
   const [logMode, setLogMode] = useState("snapshot");
   const [liveLogStatus, setLiveLogStatus] = useState("idle");
@@ -425,6 +445,10 @@ function App() {
           image,
           container_port: Number(containerPort),
           name,
+          cpu_request: cpuRequest,
+          memory_request: memoryRequest,
+          cpu_limit: cpuLimit,
+          memory_limit: memoryLimit,
         }),
       });
 
@@ -689,6 +713,46 @@ function App() {
             />
           </label>
 
+          <label>
+            <span>CPU Request</span>
+            <input
+              placeholder={DEFAULT_CPU_REQUEST}
+              value={cpuRequest}
+              onChange={(e) => setCpuRequest(e.target.value)}
+              required
+            />
+          </label>
+
+          <label>
+            <span>Memory Request</span>
+            <input
+              placeholder={DEFAULT_MEMORY_REQUEST}
+              value={memoryRequest}
+              onChange={(e) => setMemoryRequest(e.target.value)}
+              required
+            />
+          </label>
+
+          <label>
+            <span>CPU Limit</span>
+            <input
+              placeholder={DEFAULT_CPU_LIMIT}
+              value={cpuLimit}
+              onChange={(e) => setCpuLimit(e.target.value)}
+              required
+            />
+          </label>
+
+          <label>
+            <span>Memory Limit</span>
+            <input
+              placeholder={DEFAULT_MEMORY_LIMIT}
+              value={memoryLimit}
+              onChange={(e) => setMemoryLimit(e.target.value)}
+              required
+            />
+          </label>
+
           <button
             className="button button-primary"
             disabled={pendingAction === "deploy"}
@@ -736,6 +800,8 @@ function App() {
                   <th>Image</th>
                   <th>Status</th>
                   <th>Container ID</th>
+                  <th>Requests</th>
+                  <th>Limits</th>
                   <th>Created</th>
                   <th>Deleted</th>
                   <th className="actions-heading">Actions</th>
@@ -762,6 +828,12 @@ function App() {
                       </td>
                       <td>
                         <code>{shortId(deployment.container_id)}</code>
+                      </td>
+                      <td>
+                        <code>{formatResources(deployment, "requests")}</code>
+                      </td>
+                      <td>
+                        <code>{formatResources(deployment, "limits")}</code>
                       </td>
                       <td>{formatDate(deployment.created_at)}</td>
                       <td>{formatDate(deployment.deleted_at)}</td>

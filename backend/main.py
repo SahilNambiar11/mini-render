@@ -10,6 +10,10 @@ from jobs import (
     build_service,
     delete_if_exists,
     deploy_container_job,
+    DEFAULT_CPU_LIMIT,
+    DEFAULT_CPU_REQUEST,
+    DEFAULT_MEMORY_LIMIT,
+    DEFAULT_MEMORY_REQUEST,
     get_namespace,
     get_kubernetes_deployment_status,
     load_kubernetes_config,
@@ -22,6 +26,7 @@ from kubernetes.client.exceptions import ApiException
 import requests
 import logging
 import ast
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +176,68 @@ class ContainerCreateRequest(BaseModel):
     image: str
     container_port: int
     name: str
+    cpu_request: str = DEFAULT_CPU_REQUEST
+    memory_request: str = DEFAULT_MEMORY_REQUEST
+    cpu_limit: str = DEFAULT_CPU_LIMIT
+    memory_limit: str = DEFAULT_MEMORY_LIMIT
+
+
+def validate_resource_quantity(value: str, field_name: str, pattern: str):
+    if not value or not value.strip():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} cannot be empty",
+        )
+
+    if not re.fullmatch(pattern, value.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} has an invalid Kubernetes quantity",
+        )
+
+    return value.strip()
+
+
+def validate_resource_request(request: ContainerCreateRequest):
+    cpu_pattern = r"([0-9]+m|[0-9]+(\.[0-9]+)?)"
+    memory_pattern = r"[0-9]+(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|K)?"
+
+    request.cpu_request = validate_resource_quantity(
+        request.cpu_request,
+        "cpu_request",
+        cpu_pattern,
+    )
+    request.memory_request = validate_resource_quantity(
+        request.memory_request,
+        "memory_request",
+        memory_pattern,
+    )
+    request.cpu_limit = validate_resource_quantity(
+        request.cpu_limit,
+        "cpu_limit",
+        cpu_pattern,
+    )
+    request.memory_limit = validate_resource_quantity(
+        request.memory_limit,
+        "memory_limit",
+        memory_pattern,
+    )
+
+
+def format_deployment_record(deployment):
+    return {
+        "id": deployment.id,
+        "name": deployment.name,
+        "image": deployment.image,
+        "container_id": deployment.container_id,
+        "status": deployment.status,
+        "cpu_request": deployment.cpu_request,
+        "memory_request": deployment.memory_request,
+        "cpu_limit": deployment.cpu_limit,
+        "memory_limit": deployment.memory_limit,
+        "created_at": deployment.created_at,
+        "deleted_at": deployment.deleted_at,
+    }
 
 @app.get("/")
 def root():
@@ -195,11 +262,17 @@ def create_container(request: ContainerCreateRequest):
     db = SessionLocal()
 
     try:
+        validate_resource_request(request)
+
         deployment = Deployment(
             name=request.name,
             image=request.image,
             container_id=None,
-            status="queued"
+            status="queued",
+            cpu_request=request.cpu_request,
+            memory_request=request.memory_request,
+            cpu_limit=request.cpu_limit,
+            memory_limit=request.memory_limit,
         )
 
         db.add(deployment)
@@ -211,21 +284,21 @@ def create_container(request: ContainerCreateRequest):
             deployment.id,
             request.image,
             request.container_port,
-            request.name
+            request.name,
+            request.cpu_request,
+            request.memory_request,
+            request.cpu_limit,
+            request.memory_limit,
         )
 
         return {
             "message": "deployment queued",
-            "deployment": {
-                "id": deployment.id,
-                "name": deployment.name,
-                "image": deployment.image,
-                "container_id": deployment.container_id,
-                "status": deployment.status,
-                "created_at": deployment.created_at,
-                "deleted_at": deployment.deleted_at
-            }
+            "deployment": format_deployment_record(deployment)
         }
+
+    except HTTPException:
+        db.rollback()
+        raise
 
     except Exception as e:
         db.rollback()
@@ -516,15 +589,7 @@ def list_deployments():
             refresh_deployment_status(db, deployment)
 
         return [
-            {
-                "id": deployment.id,
-                "name": deployment.name,
-                "image": deployment.image,
-                "container_id": deployment.container_id,
-                "status": deployment.status,
-                "created_at": deployment.created_at,
-                "deleted_at": deployment.deleted_at
-            }
+            format_deployment_record(deployment)
             for deployment in deployments
         ]
 
@@ -550,15 +615,7 @@ def get_deployment(deployment_id: int):
 
         refresh_deployment_status(db, deployment)
 
-        return {
-            "id": deployment.id,
-            "name": deployment.name,
-            "image": deployment.image,
-            "container_id": deployment.container_id,
-            "status": deployment.status,
-            "created_at": deployment.created_at,
-            "deleted_at": deployment.deleted_at
-        }
+        return format_deployment_record(deployment)
 
     finally:
         db.close()

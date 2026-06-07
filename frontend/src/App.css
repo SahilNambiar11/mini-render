@@ -83,7 +83,7 @@
 
 .deploy-form {
   display: grid;
-  grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1.2fr) minmax(130px, 0.7fr) auto;
+  grid-template-columns: repeat(4, minmax(140px, 1fr)) auto;
   gap: 14px;
   align-items: end;
   padding: 20px;
@@ -236,7 +236,7 @@ input:focus {
 
 table {
   width: 100%;
-  min-width: 980px;
+  min-width: 1180px;
   border-collapse: collapse;
   text-align: left;
 }
