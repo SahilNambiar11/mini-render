@@ -142,6 +142,14 @@ def iter_log_lines(log_stream):
                 yield line
 
 
+def read_pod_log_stream(core_api):
+    def read_pod_log_without_watch(**kwargs):
+        kwargs.pop("watch", None)
+        return core_api.read_namespaced_pod_log(**kwargs)
+
+    return read_pod_log_without_watch
+
+
 class ContainerCreateRequest(BaseModel):
     image: str
     container_port: int
@@ -428,6 +436,8 @@ def get_container_logs(container_id: str):
             namespace=namespace,
             tail_lines=200,
         )
+        if isinstance(logs, bytes):
+            logs = logs.decode("utf-8", errors="replace")
 
         return {"logs": logs}
 
@@ -547,7 +557,7 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
         namespace, _, core_api = get_kubernetes_clients()
         pod = get_first_pod_for_deployment(core_api, namespace, container_id)
         log_stream = watch.Watch().stream(
-            core_api.read_namespaced_pod_log,
+            read_pod_log_stream(core_api),
             name=pod.metadata.name,
             namespace=namespace,
             follow=True,
