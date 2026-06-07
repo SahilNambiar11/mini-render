@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - kubernetes-migration
 
 jobs:
   deploy:
@@ -20,25 +21,41 @@ jobs:
             set -e
 
             cd ~/mini-render
-            git pull origin main
 
-            cd backend
-            source venv/bin/activate
-            pip install -r requirements.txt
+            git fetch origin
+            git reset --hard origin/kubernetes-migration
 
-            sudo systemctl kill -s SIGKILL mini-render-backend || true
-            sleep 2
-            sudo systemctl reset-failed mini-render-backend || true
-            sudo systemctl start mini-render-backend
+            # Build backend image for Kubernetes
+            sudo docker build -t mini-render-backend:local ./backend
 
-            sudo systemctl restart mini-render-worker
+            # Import Docker image into k3s/containerd
+            sudo docker save mini-render-backend:local | sudo k3s ctr images import -
 
-            cd ../frontend
+            # Apply Kubernetes config
+            sudo kubectl apply -f k8s/rbac.yaml
+            sudo kubectl apply -f k8s/postgres.yaml
+            sudo kubectl apply -f k8s/redis.yaml
+            sudo kubectl apply -f k8s/backend.yaml
+            sudo kubectl apply -f k8s/worker.yaml
+
+            # Restart Kubernetes backend/worker
+            sudo kubectl rollout restart deployment/backend
+            sudo kubectl rollout restart deployment/worker
+
+            sudo kubectl rollout status deployment/backend
+            sudo kubectl rollout status deployment/worker
+
+            # Ensure DB tables exist
+            sudo kubectl exec deployment/backend -- python create_tables.py
+
+            # Build and deploy frontend
+            cd frontend
             npm install
             npm run build
 
             sudo rm -rf /var/www/mini-render/*
             sudo cp -r dist/* /var/www/mini-render/
 
+            # Reload Nginx
             sudo nginx -t
             sudo systemctl reload nginx
