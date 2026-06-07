@@ -130,6 +130,18 @@ def get_first_pod_for_deployment(core_api, namespace: str, name: str):
     return pods.items[0]
 
 
+def iter_log_lines(log_stream):
+    for chunk in log_stream:
+        if isinstance(chunk, bytes):
+            text = chunk.decode("utf-8", errors="replace")
+        else:
+            text = str(chunk)
+
+        for line in text.splitlines(True):
+            if line:
+                yield line
+
+
 class ContainerCreateRequest(BaseModel):
     image: str
     container_port: int
@@ -341,7 +353,7 @@ def restart_container(container_id: str):
         deployment = find_deployment_by_k8s_name(db, container_id)
 
         if deployment:
-            deployment.status = get_kubernetes_deployment_status(container_id)
+            deployment.status = "pending"
             db.commit()
 
         service = core_api.read_namespaced_service(
@@ -540,10 +552,11 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
             namespace=namespace,
             follow=True,
             tail_lines=50,
+            _preload_content=False,
         )
 
-        async for line in iterate_in_threadpool(log_stream):
-            await websocket.send_text(str(line))
+        async for line in iterate_in_threadpool(iter_log_lines(log_stream)):
+            await websocket.send_text(line)
 
     except WebSocketDisconnect:
         print("Client disconnected from log stream")
