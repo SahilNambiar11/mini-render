@@ -54,6 +54,19 @@ def find_deployment_by_k8s_name(db, k8s_name: str):
     )
 
 
+def find_deployment_by_name_or_k8s_name(db, name: str):
+    deployment = find_deployment_by_k8s_name(db, name)
+
+    if deployment:
+        return deployment
+
+    return (
+        db.query(Deployment)
+        .filter(Deployment.name == name)
+        .first()
+    )
+
+
 def refresh_deployment_status(db, deployment):
     if not deployment.container_id:
         return deployment.status
@@ -133,6 +146,10 @@ def get_first_pod_for_deployment(core_api, namespace: str, name: str):
 
     if not pods.items:
         raise HTTPException(status_code=404, detail="Pod not found")
+
+    for pod in pods.items:
+        if pod.status.phase == "Running":
+            return pod
 
     return pods.items[0]
 
@@ -768,15 +785,28 @@ def get_container_metrics(container_id: str):
 
     try:
         namespace, apps_api, core_api = get_kubernetes_clients()
+        deployment = find_deployment_by_name_or_k8s_name(db, container_id)
+
+        if not deployment:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+
+        if not deployment.container_id:
+            raise HTTPException(
+                status_code=404,
+                detail="Kubernetes deployment not found",
+            )
+
+        k8s_name = deployment.container_id
         k8s_deployment = apps_api.read_namespaced_deployment(
-            name=container_id,
+            name=k8s_name,
             namespace=namespace,
         )
-        pod = get_first_pod_for_deployment(core_api, namespace, container_id)
-        resource_settings = get_deployment_resource_settings(db, container_id)
+        pod = get_first_pod_for_deployment(core_api, namespace, k8s_name)
+        resource_settings = get_deployment_resource_settings(db, k8s_name)
         response = {
             "container_id": k8s_deployment.metadata.name,
             "name": k8s_deployment.metadata.name,
+            "pod_name": pod.metadata.name,
             "status": get_deployment_status(k8s_deployment),
             "cpu_usage": "Unavailable",
             "memory_usage": "Unavailable",
