@@ -17,7 +17,7 @@ from jobs import (
 )
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.concurrency import iterate_in_threadpool
-from kubernetes import client as k8s_client, watch
+from kubernetes import client as k8s_client
 from kubernetes.client.exceptions import ApiException
 import requests
 import logging
@@ -165,14 +165,6 @@ def normalize_log_text(value):
         return value
 
     return str(value)
-
-
-def read_pod_log_stream(core_api):
-    def read_pod_log_without_watch(**kwargs):
-        kwargs.pop("watch", None)
-        return core_api.read_namespaced_pod_log(**kwargs)
-
-    return read_pod_log_without_watch
 
 
 class ContainerCreateRequest(BaseModel):
@@ -579,12 +571,11 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
     try:
         namespace, _, core_api = get_kubernetes_clients()
         pod = get_first_pod_for_deployment(core_api, namespace, container_id)
-        log_stream = watch.Watch().stream(
-            read_pod_log_stream(core_api),
+        log_stream = core_api.read_namespaced_pod_log(
             name=pod.metadata.name,
             namespace=namespace,
             follow=True,
-            tail_lines=50,
+            tail_lines=10,
             _preload_content=False,
         )
 
